@@ -1,3 +1,13 @@
+# IDEC 실습용 자료
+
+### This repository is forked version of AlexeyAB/darknet.
+
+<img width="25%" src="https://idsl.seoultech.ac.kr/image/IDSL-logo2.png"/> <img width="50%" src="https://img.etnews.com/photonews/1606/817629_20160629154205_673_0001.jpg"/>
+
+
+<details>
+  <summary>Original Version</summary>
+
 # Yolo v4, v3 and v2 for Windows and Linux
 
 ## (neural networks for object detection)
@@ -799,3 +809,6 @@ public:
     pages     = {13029-13038}
 }
 ```
+  
+  
+</details>
