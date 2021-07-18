@@ -11,7 +11,7 @@
 #include "dark_cuda.h"
 #include "blas.h"
 #include "connected_layer.h"
-
+#include "prune.h"
 
 extern void predict_classifier(char *datacfg, char *cfgfile, char *weightfile, char *filename, int top);
 extern void run_voxel(int argc, char **argv);
@@ -31,6 +31,7 @@ extern void run_cifar(int argc, char **argv);
 extern void run_go(int argc, char **argv);
 extern void run_art(int argc, char **argv);
 extern void run_super(int argc, char **argv);
+extern void run_prune(int argc, char **argv);
 
 void average(int argc, char *argv[])
 {
@@ -178,7 +179,7 @@ void partial(char *cfgfile, char *weightfile, char *outfile, int max)
     }
     *net.seen = 0;
     *net.cur_iteration = 0;
-    save_weights_upto(net, outfile, max, 0);
+    save_weights_upto(net, outfile, max);
 }
 
 #include "convolutional_layer.h"
@@ -433,11 +434,6 @@ int main(int argc, char **argv)
 {
 #ifdef _DEBUG
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
-    printf(" _DEBUG is used \n");
-#endif
-
-#ifdef DEBUG
-    printf(" DEBUG=1 \n");
 #endif
 
 	int i;
@@ -552,6 +548,8 @@ int main(int argc, char **argv)
         visualize(argv[2], (argc > 3) ? argv[3] : 0);
     } else if (0 == strcmp(argv[1], "imtest")){
         test_resize(argv[2]);
+    } else if (0 == strcmp(argv[1], "prune")){
+        run_prune(argc, argv);
     } else {
         fprintf(stderr, "Not an option: %s\n", argv[1]);
     }

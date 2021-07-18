@@ -36,12 +36,6 @@ layer make_batchnorm_layer(int batch, int w, int h, int c, int train)
     layer.rolling_mean = (float*)xcalloc(c, sizeof(float));
     layer.rolling_variance = (float*)xcalloc(c, sizeof(float));
 
-    layer.mean_delta = (float*)xcalloc(c, sizeof(float));
-    layer.variance_delta = (float*)xcalloc(c, sizeof(float));
-
-    layer.x = (float*)xcalloc(layer.batch*layer.outputs, sizeof(float));
-    layer.x_norm = (float*)xcalloc(layer.batch*layer.outputs, sizeof(float));
-
     layer.forward = forward_batchnorm_layer;
     layer.backward = backward_batchnorm_layer;
     layer.update = update_batchnorm_layer;
@@ -372,14 +366,26 @@ void backward_batchnorm_layer_gpu(layer l, network_state state)
     }
 
 #ifdef CUDNN
+    
     float one = 1;
     float zero = 0;
+    
+    float taylor = 1;
+#ifdef PRUNE
+    if(l.center == 1){
+    	taylor = 1;	
+    }else if(l.center == 0){
+    	taylor = 0;
+	
+    }
+#endif
+
     cudnnBatchNormalizationBackward(cudnn_handle(),
         CUDNN_BATCHNORM_SPATIAL,
         &one,
         &zero,
         &one,
-        &one,
+	    &taylor,
         l.normDstTensorDesc,
         l.x_gpu,                // input
         l.normDstTensorDesc,
@@ -393,11 +399,20 @@ void backward_batchnorm_layer_gpu(layer l, network_state state)
         .00001,
         l.mean_gpu,                // input (should be FP32)
         l.variance_gpu);        // input (should be FP32)
+	
+
     simple_copy_ongpu(l.outputs*l.batch, l.output_gpu, l.delta_gpu);
     //simple_copy_ongpu(l.outputs*l.batch, l.x_norm_gpu, l.delta_gpu);
 #else   // CUDNN
     backward_bias_gpu(l.bias_updates_gpu, l.delta_gpu, l.batch, l.out_c, l.out_w*l.out_h);
-    backward_scale_gpu(l.x_norm_gpu, l.delta_gpu, l.batch, l.out_c, l.out_w*l.out_h, l.scale_updates_gpu);
+    
+    if(l.center == 1){
+	backward_scale_gpu(l.x_norm_gpu, l.delta_gpu, l.batch, l.out_c, l.out_w*l.out_h, l.scale_updates_gpu);
+    }else if(l.center == 0){
+    	backward_scale_taylor_gpu(l.x_norm_gpu, l.delta_gpu, l.batch, l.out_c, l.out_w*l.out_h, l.scale_updates_gpu, l.m_buffer_gpu);
+    }
+    
+    //backward_scale_gpu(l.x_norm_gpu, l.delta_gpu, l.batch, l.out_c, l.out_w*l.out_h, l.scale_updates_gpu);
 
     scale_bias_gpu(l.delta_gpu, l.scales_gpu, l.batch, l.out_c, l.out_h*l.out_w);
 

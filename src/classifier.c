@@ -6,6 +6,7 @@
 #include "assert.h"
 #include "classifier.h"
 #include "dark_cuda.h"
+#include "prune.h"
 #ifdef WIN32
 #include <time.h>
 #include "gettimeofday.h"
@@ -27,16 +28,17 @@ float *get_regression_values(char **labels, int n)
     return v;
 }
 
-void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus, int ngpus, int clear, int dontuse_opencv, int dont_show, int mjpeg_port, int calc_topk, int show_imgs, char* chart_path)
+void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus, int ngpus, int clear, int dontuse_opencv, int dont_show, int mjpeg_port, int calc_topk, int show_imgs, char* chart_path, float prune_ratio, int method, float penalty, float target_flops)
 {
     int i;
 
     float avg_loss = -1;
-    float avg_contrastive_acc = 0;
     char *base = basecfg(cfgfile);
     printf("%s\n", base);
     printf("%d\n", ngpus);
     network* nets = (network*)xcalloc(ngpus, sizeof(network));
+    
+
 
     srand(time(0));
     int seed = rand();
@@ -54,10 +56,80 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
             *nets[i].cur_iteration = 0;
         }
         nets[i].learning_rate *= ngpus;
+    
+  
+        nets[i].prune_ratio = prune_ratio;
+        nets[i].method = method;
+   
+        /* NJ */
+        for(int k = 1; k < nets[i].n;++k){
+            layer *l = &nets[i].layers[k];
+            layer *n = &nets[i].layers[k-1];
+            layer *n1 = &nets[i].layers[k-2];
+            layer *n2 = &nets[i].layers[k-3];
+            if(l->type == SHORTCUT){
+                nets[i].layers[l->index].center = 1;//input layer 1
+                n->center = 1;//input layer 2
+            }else{
+                n->center = 0;
+                n->method = nets[i].method;
+                n->penalty = penalty;
+
+                //n1->center = 0; 
+                //n2->center = 0; 
+            }
+        }
+
+        //first X
+       
+        
+        for(int k = 0; k < nets[i].n; ++k){
+            layer *l = &nets[i].layers[k];
+            if(k == 0){
+               l->center = 1; 
+            }
+        }
+        
+        
+        for(int k = 0; k< nets[i].n; ++k){
+            layer *l = &nets[i].layers[k];
+            if(l->type != SHORTCUT && l->type != AVGPOOL && l->type != SOFTMAX && l->type != ROUTE)
+            printf("index = %d // center = %d\n",l->index, l->center);
+            
+        }
+        
+  
+        int tot = 0; 
+        for(int k = 0; k < nets[i].n; ++k){
+            layer l = nets[i].layers[k];
+            if(l.center == 0 && l.batch_normalize){
+                tot += l.n; 
+                nets[i].tot += l.n; 
+                
+            }    
+        }   
+        nets[i].tot_drop_mask_copy = (float*)xcalloc(nets[i].tot, sizeof(float));
+        nets[i].tot_drop_mask = (float*)xcalloc(nets[i].tot, sizeof(float));
+        nets[i].reactivation = (float*)xcalloc(nets[i].tot, sizeof(float));
+    
+        for(int k = 0; k < nets[i].tot; ++k){
+            nets[i].tot_drop_mask[k] = 0; 
+            nets[i].tot_drop_mask_copy[k] = 0; 
+            nets[i].reactivation[k] = 0; 
+        }    
+        printf("tot = %d\n",tot);
+        printf("tot = %d\n",nets[i].tot);
+    
     }
+    
     srand(time(0));
     network net = nets[0];
 
+
+
+
+
+   
     int imgs = net.batch * net.subdivisions * ngpus;
 
     printf("Learning Rate: %g, Momentum: %g, Decay: %g\n", net.learning_rate, net.momentum, net.decay);
@@ -70,18 +142,13 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
     int topk_data = option_find_int(options, "top", 5);
     char topk_buff[10];
     sprintf(topk_buff, "top%d", topk_data);
-    layer l = net.layers[net.n - 1];
-    if (classes != l.outputs && (l.type == SOFTMAX || l.type == COST)) {
+    if (classes != net.layers[net.n - 1].inputs) {
         printf("\n Error: num of filters = %d in the last conv-layer in cfg-file doesn't match to classes = %d in data-file \n",
-            l.outputs, classes);
+            net.layers[net.n - 1].inputs, classes);
         getchar();
     }
 
     char **labels = get_labels(label_list);
-    if (net.unsupervised) {
-        free(labels);
-        labels = NULL;
-    }
     list *plist = get_paths(train_list);
     char **paths = (char **)list_to_array(plist);
     printf("%d\n", plist->size);
@@ -93,10 +160,8 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
     args.h = net.h;
     args.c = net.c;
     args.threads = 32;
-    if (net.contrastive && args.threads > net.batch/2) args.threads = net.batch / 2;
     args.hierarchy = net.hierarchy;
 
-    args.contrastive = net.contrastive;
     args.dontuse_opencv = dontuse_opencv;
     args.min = net.min_crop;
     args.max = net.max_crop;
@@ -124,7 +189,7 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
 #ifdef OPENCV
     //args.threads = 3;
     mat_cv* img = NULL;
-    float max_img_loss = net.max_chart_loss;
+    float max_img_loss = 10;
     int number_of_lines = 100;
     int img_size = 1000;
     char windows_name[100];
@@ -143,6 +208,15 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
     int iter_topk = get_current_batch(net);
     float topk = 0;
 
+        
+    /* NJ */
+   
+    float mean_average_precision = -1;
+    
+    float best_map = mean_average_precision;
+
+
+   
     int count = 0;
     double start, time_remaining, avg_time = -1, alpha_time = 0.01;
     start = what_time_is_it_now();
@@ -156,7 +230,6 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
 
         printf("Loaded: %lf seconds\n", sec(clock()-time));
         time=clock();
-
         float loss = 0;
 #ifdef GPU
         if(ngpus == 1){
@@ -172,13 +245,126 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
 
         i = get_current_batch(net);
 
-        int calc_topk_for_each = iter_topk + 2 * train_images_num / (net.batch * net.subdivisions);  // calculate TOPk for each 2 Epochs
-        calc_topk_for_each = fmax(calc_topk_for_each, net.burn_in);
+
+        /* NJ */
+
+    float tot_bf = 0;
+    float tot_bf_buffer = 0;
+    float residual = 0;
+    float conv = 0; 
+    float imagenet = 0; 
+    for(int p = 0; p < net.n; ++p){
+        layer l = net.layers[p];
+        if(l.type == SHORTCUT){
+            residual++;
+        }    
+        if(l.type == CONVOLUTIONAL){
+            conv++;
+            if(p == (net.n - 2)){ 
+                if(l.n == 1000){
+                    imagenet++;
+                }    
+            }    
+        }    
+    }    
+    
+    if(residual >= 81){ 
+    
+        tot_bf = 0.7618792653;
+        tot_bf_buffer = tot_bf;
+    }else if(residual >= 54){ 
+       
+        tot_bf = 0.5068160295;
+        tot_bf_buffer = tot_bf;
+    
+    }else if(residual >= 27){ 
+            
+        tot_bf =  0.2517536581;
+        tot_bf_buffer = tot_bf;
+    
+    }else if(residual >= 9){
+        
+        if(imagenet){
+        
+            tot_bf =  10.6889505386;
+            tot_bf_buffer = tot_bf;
+    
+        }else{
+            
+            tot_bf =  0.0817123950;
+            tot_bf_buffer = tot_bf;
+    
+        }
+    }else{   
+        if(conv == 14){
+            tot_bf =  0.6265261173;
+            tot_bf_buffer = tot_bf;
+    
+        }
+        if(conv == 17){
+         
+            tot_bf = 0.7963953614;
+            tot_bf_buffer = tot_bf;
+    
+
+        }
+    
+    }    
+    
+        //Check BFLOPs reduction(%)
+        for(int p = 0; p < net.n; ++p){
+            layer l = net.layers[p];
+            layer n = net.layers[p+1];
+            if(l.batch_normalize && l.center == 0){
+                int p_channel = 0; 
+                float bf = 0; 
+                float bf_next = 0; 
+                for(int j = 0; j < l.n; ++j){
+                    if(fabs(l.scales[j]) < 0.001){
+                        p_channel++;
+                    }    
+                }    
+                //p_channel--;
+                bf =  (2.0 * (p_channel) * l.out_w * l.out_h * (l.c * l.size * l.size)) / 1000000000.;
+                bf_next = (2.0 * n.out_c * n.out_w * n.out_h * ((p_channel) * n.size * n.size)) / 1000000000.;       
+                tot_bf_buffer -= (bf + bf_next);
+            }        
+        }
+        printf("******************************************************************\n");
+        printf("******************************************************************\n");
+        printf("BFLOPs Reduction = %f\n", ((tot_bf_buffer / tot_bf)-1) * (-100));
+        printf("******************************************************************\n");
+        printf("******************************************************************\n");
+
+        if( get_current_batch(net) % 200 == 0){
+            for(int g = 0; g < ngpus; ++g){
+                nets[g].pruning = 1;
+            }
+        }else{
+            for(int g = 0; g < ngpus; ++g){
+                nets[g].pruning = 1;
+            }
+        }
+        /*
+        if((((tot_bf_buffer / tot_bf)-1) * (-100)) > target_flops){
+            for(int g = 0; g < ngpus; ++g){
+                nets[g].pruning = 1;
+            }
+        }else{
+             for(int g = 0; g < ngpus; ++g){
+                nets[g].pruning = 1;
+            }
+        }
+        */
+
+        int calc_topk_for_each = iter_topk + 1 * train_images_num / (net.batch * net.subdivisions);  // calculate TOPk for each 2 Epochs
+        //calc_topk_for_each = fmax(calc_topk_for_each, net.burn_in);
+        calc_topk_for_each = fmax(calc_topk_for_each, net.max_batches*0.75);
         calc_topk_for_each = fmax(calc_topk_for_each, 100);
         if (i % 10 == 0) {
             if (calc_topk) {
                 fprintf(stderr, "\n (next TOP%d calculation at %d iterations) ", topk_data, calc_topk_for_each);
-                if (topk > 0) fprintf(stderr, " Last accuracy TOP%d = %2.2f %% \n", topk_data, topk * 100);
+                if (topk > 0) fprintf(stderr, " Last accuracy TOP%d = %2.2f %%, Best Accuray = %2.2f \n", topk_data, topk * 100, best_map * 100);
             }
 
             if (net.cudnn_half) {
@@ -190,37 +376,41 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
         int draw_precision = 0;
         if (calc_topk && (i >= calc_topk_for_each || i == net.max_batches)) {
             iter_topk = i;
-            if (net.contrastive && l.type != SOFTMAX && l.type != COST) {
-                int k;
-                for (k = 0; k < net.n; ++k) if (net.layers[k].type == CONTRASTIVE) break;
-                topk = *(net.layers[k].loss) / 100;
-                sprintf(topk_buff, "Contr");
+            topk = validate_classifier_single(datacfg, cfgfile, weightfile, &net, topk_data); // calc TOP-n
+                      
+            /* NJ */
+            
+            mean_average_precision = topk;
+            
+            if(mean_average_precision > best_map){
+            
+                best_map = mean_average_precision;
+                
+                char buff[256];
+                
+                sprintf(buff, "%s%s_best.weights", backup_directory, base);
+                
+                save_weights(net, buff);
+                
             }
-            else {
-                topk = validate_classifier_single(datacfg, cfgfile, weightfile, &net, topk_data); // calc TOP-n
-                printf("\n accuracy %s = %f \n", topk_buff, topk);
-            }
+            
+            
+            
+            printf("\n accuracy %s = %f \n", topk_buff, topk);
             draw_precision = 1;
         }
 
-        time_remaining = ((net.max_batches - i) / ngpus) * (what_time_is_it_now() - start) / 60 / 60;
+        time_remaining = (net.max_batches - i)*(what_time_is_it_now() - start) / 60 / 60;
         // set initial value, even if resume training from 10000 iteration
         if (avg_time < 0) avg_time = time_remaining;
         else avg_time = alpha_time * time_remaining + (1 -  alpha_time) * avg_time;
         start = what_time_is_it_now();
         printf("%d, %.3f: %f, %f avg, %f rate, %lf seconds, %ld images, %f hours left\n", get_current_batch(net), (float)(*net.seen)/ train_images_num, loss, avg_loss, get_current_rate(net), sec(clock()-time), *net.seen, avg_time);
 #ifdef OPENCV
-        if (net.contrastive) {
-            float cur_con_acc = -1;
-            int k;
-            for (k = 0; k < net.n; ++k)
-                if (net.layers[k].type == CONTRASTIVE) cur_con_acc = *net.layers[k].loss;
-            if (cur_con_acc >= 0) avg_contrastive_acc = avg_contrastive_acc*0.99 + cur_con_acc * 0.01;
-            printf("  avg_contrastive_acc = %f \n", avg_contrastive_acc);
-        }
-        if (!dontuse_opencv) draw_train_loss(windows_name, img, img_size, avg_loss, max_img_loss, i, net.max_batches, topk, draw_precision, topk_buff, avg_contrastive_acc / 100, dont_show, mjpeg_port, avg_time);
+        if (!dontuse_opencv) draw_train_loss(windows_name, img, img_size, avg_loss, max_img_loss, i, net.max_batches, topk, draw_precision, topk_buff, dont_show, mjpeg_port, avg_time);
 #endif  // OPENCV
 
+        if(i > 600000){
         if (i >= (iter_save + 1000)) {
             iter_save = i;
 #ifdef GPU
@@ -229,6 +419,7 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
             char buff[256];
             sprintf(buff, "%s/%s_%d.weights", backup_directory, base, i);
             save_weights(net, buff);
+        }
         }
 
         if (i >= (iter_save_last + 100)) {
@@ -249,10 +440,22 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
     sprintf(buff, "%s/%s_final.weights", backup_directory, base);
     save_weights(net, buff);
 
+
+    FILE *reactivation = fopen("gate_R50_reactivation.txt", "w");
+    for(i = 0; i < net.tot; ++i){
+        fprintf(reactivation, "%f\n", net.reactivation[i]);
+    }
+    fclose(reactivation);
+
+
+
 #ifdef OPENCV
     release_mat(&img);
     destroy_all_windows_cv();
 #endif
+
+
+
 
     pthread_join(load_thread, 0);
     free_data(buffer);
@@ -262,9 +465,10 @@ void train_classifier(char *datacfg, char *cfgfile, char *weightfile, int *gpus,
     free(nets);
 
     //free_ptrs((void**)labels, classes);
-    if(labels) free(labels);
+    free(labels);
     free_ptrs((void**)paths, plist->size);
     free_list(plist);
+    free(nets);
     free(base);
 
     free_list_contents_kvp(options);
@@ -823,6 +1027,9 @@ void try_classifier(char *datacfg, char *cfgfile, char *weightfile, char *filena
     free(indexes);
 }
 
+
+
+
 void predict_classifier(char *datacfg, char *cfgfile, char *weightfile, char *filename, int top)
 {
     network net = parse_network_cfg_custom(cfgfile, 1, 0);
@@ -835,16 +1042,17 @@ void predict_classifier(char *datacfg, char *cfgfile, char *weightfile, char *fi
     fuse_conv_batchnorm(net);
     calculate_binary_weights(net);
 
+    //prune_yolov3(cfgfile, weightfile, 0.3, 0, 0);
+
     list *options = read_data_cfg(datacfg);
 
     char *name_list = option_find_str(options, "names", 0);
     if(!name_list) name_list = option_find_str(options, "labels", "data/labels.list");
     int classes = option_find_int(options, "classes", 2);
     printf(" classes = %d, output in cfg = %d \n", classes, net.layers[net.n - 1].c);
-    layer l = net.layers[net.n - 1];
-    if (classes != l.outputs && (l.type == SOFTMAX || l.type == COST)) {
+    if (classes != net.layers[net.n - 1].inputs) {
         printf("\n Error: num of filters = %d in the last conv-layer in cfg-file doesn't match to classes = %d in data-file \n",
-            l.outputs, classes);
+            net.layers[net.n - 1].inputs, classes);
         getchar();
     }
     if (top == 0) top = option_find_int(options, "top", 1);
@@ -869,10 +1077,12 @@ void predict_classifier(char *datacfg, char *cfgfile, char *weightfile, char *fi
         }
         image im = load_image_color(input, 0, 0);
         image resized = resize_min(im, net.w);
-        image cropped = crop_image(resized, (resized.w - net.w)/2, (resized.h - net.h)/2, net.w, net.h);
-        printf("%d %d\n", cropped.w, cropped.h);
+        image r = crop_image(resized, (resized.w - net.w)/2, (resized.h - net.h)/2, net.w, net.h);
+        //image r = resize_min(im, size);
+        //resize_network(&net, r.w, r.h);
+        printf("%d %d\n", r.w, r.h);
 
-        float *X = cropped.data;
+        float *X = r.data;
 
         double time = get_time_point();
         float *predictions = network_predict(net, X);
@@ -886,13 +1096,9 @@ void predict_classifier(char *datacfg, char *cfgfile, char *weightfile, char *fi
             if(net.hierarchy) printf("%d, %s: %f, parent: %s \n",index, names[index], predictions[index], (net.hierarchy->parent[index] >= 0) ? names[net.hierarchy->parent[index]] : "Root");
             else printf("%s: %f\n",names[index], predictions[index]);
         }
-
-        free_image(cropped);
-        if (resized.data != im.data) {
-            free_image(resized);
-        }
+        if(r.data != im.data) free_image(r);
         free_image(im);
-
+        free_image(resized);
         if (filename) break;
     }
     free(indexes);
@@ -1392,6 +1598,20 @@ void run_classifier(int argc, char **argv)
     int cam_index = find_int_arg(argc, argv, "-c", 0);
     int top = find_int_arg(argc, argv, "-t", 0);
     int clear = find_arg(argc, argv, "-clear");
+
+    float prune_ratio = find_float_arg(argc, argv, "-r", .5);
+    float penalty = find_float_arg(argc, argv, "-s", .0001);
+    float target_flops = find_float_arg(argc, argv, "-f", 50);
+    
+    int s_momentum = find_arg(argc, argv, "-s_mom");
+    int gsm = find_arg(argc, argv, "-gsm" );
+    int gate = find_arg(argc, argv, "-gate" );
+    int slim = find_arg(argc, argv, "-slim" );
+    int agl = find_arg(argc, argv, "-agl"  );
+
+    int method=4;
+
+
     char *data = argv[3];
     char *cfg = argv[4];
     char *weights = (argc > 5) ? argv[5] : 0;
@@ -1401,7 +1621,7 @@ void run_classifier(int argc, char **argv)
     char* chart_path = find_char_arg(argc, argv, "-chart", 0);
     if(0==strcmp(argv[2], "predict")) predict_classifier(data, cfg, weights, filename, top);
     else if(0==strcmp(argv[2], "try")) try_classifier(data, cfg, weights, filename, atoi(layer_s));
-    else if(0==strcmp(argv[2], "train")) train_classifier(data, cfg, weights, gpus, ngpus, clear, dontuse_opencv, dont_show, mjpeg_port, calc_topk, show_imgs, chart_path);
+    else if(0==strcmp(argv[2], "train")) train_classifier(data, cfg, weights, gpus, ngpus, clear, dontuse_opencv, dont_show, mjpeg_port, calc_topk, show_imgs, chart_path, prune_ratio, method, penalty, target_flops);
     else if(0==strcmp(argv[2], "demo")) demo_classifier(data, cfg, weights, cam_index, filename, benchmark, benchmark_layers);
     else if(0==strcmp(argv[2], "gun")) gun_classifier(data, cfg, weights, cam_index, filename);
     else if(0==strcmp(argv[2], "threat")) threat_classifier(data, cfg, weights, cam_index, filename);

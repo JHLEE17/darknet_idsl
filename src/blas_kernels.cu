@@ -20,6 +20,230 @@ float warpAllReduceSum(float val) {
     return val;
 }
 
+__device__ float sign(float x)
+{
+    float t = x < 0 ? -1 : 1;
+
+    return x > 0 ? 1 : t;
+}
+
+__device__ float sign2(float x, float y)
+{
+
+    float t = x*y < 0 ? 1 : 0;
+
+    return t;
+}
+
+
+__global__ void slim_kernel(int N, float lr, float * scale_updates, float * scales, float * scale_updates_accum, float penalty)
+{
+    int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+    if(i >= N) return;
+
+    //Momentum Buffer.
+    //L1-regularization
+    scale_updates_accum[i] += (scale_updates[i] - (penalty * sign(scales[i])) );
+
+    //Updates
+    scales[i] += (lr * scale_updates_accum[i] );
+
+    //Momentum updates
+    scale_updates_accum[i] *= 0.9;
+    
+}
+void taylor_original_ongpu(int N, float lr, float * scale_updates, float * scales, float * scale_updates_accum, float * drop_mask, float * s_momentum, int batch, float momentum, int method, float sparsity)
+{
+        
+    // Slimming
+    float penalty = 0.0001;
+    slim_kernel<<<cuda_gridsize(N), BLOCK, 0, get_cuda_stream()>>>(N, lr, scale_updates, scales, scale_updates_accum, penalty*batch);
+    
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+
+__global__ void ft_bias_kernel(int N, float lr, float * scale_updates, float * scales, float * scale_updates_accum, float momentum)
+{
+    int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+    if(i >= N) return;
+
+    scale_updates_accum[i] += scale_updates[i] ;
+    scales[i] += (lr * scale_updates_accum[i]);
+    scale_updates_accum[i] *= momentum;
+}
+
+
+
+void ft_bias_ongpu(int N, float lr, float * scale_updates, float * scales, float * scale_updates_accum, int batch, float momentum)
+{
+    ft_bias_kernel<<<cuda_gridsize(N), BLOCK, 0, get_cuda_stream()>>>(N, lr, scale_updates, scales, scale_updates_accum, momentum);
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+
+
+__global__ void taylor_kernel(int N, float ALPHA, float *scale_updates, float *scales,float *drop_mask, float *m_buffer, int batch, float penalty, float momentum, float pruning_momentum)
+{
+    int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+    if(i >= N) return;
+  
+
+    scale_updates[i] = (scale_updates[i] * drop_mask[i]) - (scales[i] * penalty * batch) + m_buffer[i];
+    //scale_updates[i] = (scale_updates[i] ) + m_buffer[i];
+
+    scales[i] += (ALPHA * scale_updates[i]);
+    if(drop_mask[i] == 0){
+        m_buffer[i] = (scale_updates[i] * pruning_momentum);
+    }else if(drop_mask[i] == 1){
+        m_buffer[i] = (scale_updates[i] * momentum);
+    }
+    
+    /* 
+    m_buffer[i] += (scale_updates[i] * drop_mask[i] - scales[i] * penalty * batch);
+    scales[i] += (ALPHA * m_buffer[i]); 
+    m_buffer[i] *= momentum;
+    scale_updates[i] = m_buffer[i];
+*/
+  
+}
+
+
+void taylor_ongpu(int N, float ALPHA, float * X, float * Y, float * drop_mask, float *m_buffer, int batch, float penalty, float momentum, float pruning_momentum)
+{
+    taylor_kernel<<<cuda_gridsize(N), BLOCK, 0, get_cuda_stream()>>>(N, ALPHA, X, Y, drop_mask, m_buffer, batch, penalty, momentum, pruning_momentum);
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+
+
+__global__ void backward_scale_taylor_kernel(float *x_norm, float *delta, int batch, int n, int size, float *scale_updates, float *m_buffer)
+{
+    __shared__ float part[BLOCK];
+    int i,b;
+    int filter = blockIdx.x;
+    int p = threadIdx.x;
+    float sum = 0;
+    for(b = 0; b < batch; ++b){
+        for(i = 0; i < size; i += BLOCK){
+            int index = p + i + size*(filter + n*b);
+            sum += (p+i < size) ? delta[index]*x_norm[index] : 0;
+        }
+    }
+    part[p] = sum;
+    __syncthreads();
+    if (p == 0) {
+        for(i = 0; i < BLOCK; ++i) {
+		//m_buffer[filter] = part[i];
+		scale_updates[filter] = part[i];
+	
+	}
+	
+    }
+}
+
+void backward_scale_taylor_gpu(float *x_norm, float *delta, int batch, int n, int size, float *scale_updates, float *m_buffer)
+{
+    backward_scale_taylor_kernel<<<n, BLOCK, 0, get_cuda_stream() >>>(x_norm, delta, batch, n, size, scale_updates, m_buffer);
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+
+
+
+
+/*
+__global__ scaling_kernel(int nweights, float *weights, float scaling, int filter_size, int n )
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if(index >= n) return;
+    //int f = (index / filter_size);
+    int i;
+    float sum = 0;
+    for(i = 0 ; i < filter_size; ++i){
+        sum += powf(weights[i + index * filter_size], 2) 
+    }
+    __syncthreads();
+    if(index == 0){
+        for(i = 0; i < n/2; ++i){
+        }
+    }
+}
+
+
+void scaling_ongpu(int nweights, float *weights, float *scaling, int filter_size, int n)
+{
+    const int num_blocks = get_number_of_blocks(n, BLOCK);
+    scaling_kernel<<< num_blocks, BLOCK, 0 , get_cuda_stream() >>> (nweights/2, weights, scaling, filter_size, n);
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+*/
+
+__global__ void align_gradient_kernel(int nweights, float *weight_updates, int filter_size, float *scaling)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if(index >= nweights) return;
+    int f = (index / filter_size);
+    weight_updates[index + (index / filter_size) * filter_size] = (weight_updates[index + (index / filter_size) * filter_size] + weight_updates[index + filter_size + (index / filter_size) * filter_size]) * 0.5 ;
+    weight_updates[index + filter_size + (index / filter_size) * filter_size] = (weight_updates[index + (index / filter_size) * filter_size]) * scaling[f*2];
+    
+
+}
+
+void align_gradient_ongpu(int nweights, float *weight_updates, int filter_size, float *scaling)
+{
+    const int num_blocks = get_number_of_blocks(nweights/2, BLOCK);
+
+    align_gradient_kernel<<< num_blocks, BLOCK, 0, get_cuda_stream()>>>(nweights/2, weight_updates,  filter_size, scaling);
+    
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+__global__ void odd_axpy_kernel(int nweights, float lr, float *weight_updates, float *weights, int filter_size)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if(index >= nweights) return;
+   
+
+    if((index / filter_size) % 2 == 1){
+        weights[index] += (lr * weight_updates[index]); 
+    }
+
+}
+
+void odd_axpy_ongpu(int nweights, float lr, float *weight_updates, float *weights, int filter_size)
+{
+    const int num_blocks = get_number_of_blocks(nweights, BLOCK);
+
+    odd_axpy_kernel <<<num_blocks, BLOCK, 0, get_cuda_stream() >>> (nweights, lr, weight_updates, weights, filter_size);
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+
+
+
+__global__ void even_axpy_kernel(int nweights, float lr, float *weight_updates, float *weights, int filter_size)
+{
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if(index >= nweights) return;
+   
+
+    if((index / filter_size) % 2 == 0){
+        weights[index] += (lr * weight_updates[index]); 
+    }
+
+}
+
+void even_axpy_ongpu(int nweights, float lr, float *weight_updates, float *weights, int filter_size)
+{
+    const int num_blocks = get_number_of_blocks(nweights, BLOCK);
+
+    even_axpy_kernel <<<num_blocks, BLOCK, 0, get_cuda_stream() >>> (nweights, lr, weight_updates, weights, filter_size);
+    CHECK_CUDA(cudaPeekAtLastError());
+}
+
+
 __global__ void compare_2_arrays_kernel(float *one, float *two, int size)
 {
     const int index = blockIdx.x*blockDim.x + threadIdx.x;
@@ -37,24 +261,6 @@ void compare_2_arrays_gpu(float *one, float *two, int size)
     compare_2_arrays_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(one, two, size);
     CHECK_CUDA(cudaPeekAtLastError());
     CHECK_CUDA(cudaDeviceSynchronize());
-}
-
-__global__ void mean_array_kernel(float *src, int size, float alpha, float *avg)
-{
-    const int i = blockIdx.x*blockDim.x + threadIdx.x;
-    if (i >= size) return;
-
-    avg[i] = avg[i] * (1 - alpha) + src[i] * alpha;
-    src[i] = avg[i];
-}
-
-
-void mean_array_gpu(float *src, int size, float alpha, float *avg)
-{
-    const int num_blocks = get_number_of_blocks(size, BLOCK);
-
-    mean_array_kernel << <num_blocks, BLOCK, 0, get_cuda_stream() >> >(src, size, alpha, avg);
-    CHECK_CUDA(cudaPeekAtLastError());
 }
 
 
@@ -859,34 +1065,35 @@ extern "C" void fill_ongpu(int N, float ALPHA, float * X, int INCX)
     CHECK_CUDA(cudaPeekAtLastError());
 }
 
+
 __global__ void gradient_centralization_kernel(int filters, int f_size, float *in)
 {
-    const int index = blockIdx.x*blockDim.x + threadIdx.x;
-    const int tid = index % WARP_SIZE;
-    const int f = index / WARP_SIZE;
+	    const int index = blockIdx.x*blockDim.x + threadIdx.x;
+		    const int tid = index % WARP_SIZE;
+			    const int f = index / WARP_SIZE;
 
-    if (f >= filters) return;
+				    if (f >= filters) return;
 
-    float mean = 0;
-    for (int i = 0; i < f_size; i += WARP_SIZE) {
-        mean += warpAllReduceSum(in[f*f_size + i + tid]);
-    }
-    mean = mean / f_size;
-    for (int i = 0; i < f_size; i += WARP_SIZE) {
-        in[f*f_size + i + tid] -= mean;
-    }
+					    float mean = 0;
+						    for (int i = 0; i < f_size; i += WARP_SIZE) {
+								        mean += warpAllReduceSum(in[f*f_size + i + tid]);
+										    }
+							    mean = mean / f_size;
+								    for (int i = 0; i < f_size; i += WARP_SIZE) {
+										        in[f*f_size + i + tid] -= mean;
+												    }
 
 }
 
 extern "C" void gradient_centralization_gpu(int w, int h, int c, int f, float *in)
 {
-    const int size = f * WARP_SIZE;
-    const int f_size = c * h * w;
-    if (f_size % WARP_SIZE == 0) {
+	    const int size = f * WARP_SIZE;
+		    const int f_size = c * h * w;
+			    if (f_size % WARP_SIZE == 0) {
 
-        gradient_centralization_kernel << <get_number_of_blocks(size, BLOCK), BLOCK, 0, get_cuda_stream() >> > (f, f_size, in);
-        CHECK_CUDA(cudaPeekAtLastError());
-    }
+					        gradient_centralization_kernel << <get_number_of_blocks(size, BLOCK), BLOCK, 0, get_cuda_stream() >> > (f, f_size, in);
+							        CHECK_CUDA(cudaPeekAtLastError());
+									    }
 }
 
 __device__ float relu(float src) {
@@ -909,7 +1116,7 @@ __device__ float grad_lrelu(float src) {
     return (src > eps);
 }
 
-__global__ void shortcut_singlelayer_simple_kernel(int size, int src_outputs, int batch, int n, int *outputs_of_layers_gpu, float **layers_output_gpu, float *out, float *in, float *weights_gpu, int nweights, WEIGHTS_NORMALIZATION_T weights_normalization)
+__global__ void shortcut_singlelayer_simple_kernel(int size, int src_outputs, int batch, int n, int *outputs_of_layers_gpu, float **layers_output_gpu, float *out, float *in, float *weights_gpu, int nweights, WEIGHTS_NORMALIZATION_T weights_normalizion)
 {
     const int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if (id >= size) return;
@@ -931,7 +1138,7 @@ __global__ void shortcut_singlelayer_simple_kernel(int size, int src_outputs, in
     out[id] = out_val;
 }
 
-__global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch, int n, int *outputs_of_layers_gpu, float **layers_output_gpu, float *out, float *in, float *weights_gpu, int nweights, WEIGHTS_NORMALIZATION_T weights_normalization)
+__global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch, int n, int *outputs_of_layers_gpu, float **layers_output_gpu, float *out, float *in, float *weights_gpu, int nweights, WEIGHTS_NORMALIZATION_T weights_normalizion)
 {
     const int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if (id >= size) return;
@@ -947,8 +1154,8 @@ __global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch,
     int src_b = src_id;
 
     float sum = 1, max_val = -FLT_MAX;
-    if (weights_gpu && weights_normalization) {
-        if (weights_normalization == SOFTMAX_NORMALIZATION) {
+    if (weights_gpu && weights_normalizion) {
+        if (weights_normalizion == SOFTMAX_NORMALIZATION) {
             for (int i = 0; i < (n + 1); ++i) {
                 const int weights_index = src_i / step + i*layer_step;  // [0 or c or (c, h ,w)]
                 const float w = weights_gpu[weights_index];
@@ -960,8 +1167,8 @@ __global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch,
         for (int i = 0; i < (n + 1); ++i) {
             const int weights_index = src_i / step + i*layer_step;  // [0 or c or (c, h ,w)]
             const float w = weights_gpu[weights_index];
-            if (weights_normalization == RELU_NORMALIZATION) sum += lrelu(w);
-            else if (weights_normalization == SOFTMAX_NORMALIZATION) sum += expf(w - max_val);
+            if (weights_normalizion == RELU_NORMALIZATION) sum += lrelu(w);
+            else if (weights_normalizion == SOFTMAX_NORMALIZATION) sum += expf(w - max_val);
         }
     }
 
@@ -969,8 +1176,8 @@ __global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch,
 
     if (weights_gpu) {
         float w = weights_gpu[src_i / step];
-        if (weights_normalization == RELU_NORMALIZATION) w = lrelu(w) / sum;
-        else if (weights_normalization == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
+        if (weights_normalizion == RELU_NORMALIZATION) w = lrelu(w) / sum;
+        else if (weights_normalizion == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
 
         out_val = in[id] * w; // [0 or c or (c, h ,w)]
     }
@@ -987,8 +1194,8 @@ __global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch,
             if (weights_gpu) {
                 const int weights_index = src_i / step + (i + 1)*layer_step;  // [0 or c or (c, h ,w)]
                 float w = weights_gpu[weights_index];
-                if (weights_normalization == RELU_NORMALIZATION) w = lrelu(w) / sum;
-                else if (weights_normalization == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
+                if (weights_normalizion == RELU_NORMALIZATION) w = lrelu(w) / sum;
+                else if (weights_normalizion == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
 
                 out_val += add[add_index] * w; // [0 or c or (c, h ,w)]
             }
@@ -998,22 +1205,22 @@ __global__ void shortcut_multilayer_kernel(int size, int src_outputs, int batch,
     out[id] = out_val;
 }
 
-extern "C" void shortcut_multilayer_gpu(int src_outputs, int batch, int n, int *outputs_of_layers_gpu, float **layers_output_gpu, float *out, float *in, float *weights_gpu, int nweights, WEIGHTS_NORMALIZATION_T weights_normalization)
+extern "C" void shortcut_multilayer_gpu(int src_outputs, int batch, int n, int *outputs_of_layers_gpu, float **layers_output_gpu, float *out, float *in, float *weights_gpu, int nweights, WEIGHTS_NORMALIZATION_T weights_normalizion)
 {
     //printf(" src_outputs = %d, batch = %d, n = %d \n", src_outputs, batch, n);
     int size = batch * src_outputs;
     if (nweights == 0 && n == 1) {
-        shortcut_singlelayer_simple_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, src_outputs, batch, n, outputs_of_layers_gpu, layers_output_gpu, out, in, weights_gpu, nweights, weights_normalization);
+        shortcut_singlelayer_simple_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, src_outputs, batch, n, outputs_of_layers_gpu, layers_output_gpu, out, in, weights_gpu, nweights, weights_normalizion);
     }
     else {
-        shortcut_multilayer_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, src_outputs, batch, n, outputs_of_layers_gpu, layers_output_gpu, out, in, weights_gpu, nweights, weights_normalization);
+        shortcut_multilayer_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, src_outputs, batch, n, outputs_of_layers_gpu, layers_output_gpu, out, in, weights_gpu, nweights, weights_normalizion);
     }
     CHECK_CUDA(cudaPeekAtLastError());
 }
 
 
 __global__ void backward_shortcut_multilayer_kernel(int size, int src_outputs, int batch, int n, int *outputs_of_layers_gpu,
-    float **layers_delta_gpu, float *delta_out, float *delta_in, float *weights_gpu, float *weight_updates_gpu, int nweights, float *in, float **layers_output_gpu, WEIGHTS_NORMALIZATION_T weights_normalization)
+    float **layers_delta_gpu, float *delta_out, float *delta_in, float *weights_gpu, float *weight_updates_gpu, int nweights, float *in, float **layers_output_gpu, WEIGHTS_NORMALIZATION_T weights_normalizion)
 {
     const int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
     if (id >= size) return;
@@ -1030,8 +1237,8 @@ __global__ void backward_shortcut_multilayer_kernel(int size, int src_outputs, i
 
     float grad = 1, sum = 1, max_val = -FLT_MAX;
     int i;
-    if (weights_gpu && weights_normalization) {
-        if (weights_normalization == SOFTMAX_NORMALIZATION) {
+    if (weights_gpu && weights_normalizion) {
+        if (weights_normalizion == SOFTMAX_NORMALIZATION) {
             for (int i = 0; i < (n + 1); ++i) {
                 const int weights_index = src_i / step + i*layer_step;  // [0 or c or (c, h ,w)]
                 float w = weights_gpu[weights_index];
@@ -1043,19 +1250,19 @@ __global__ void backward_shortcut_multilayer_kernel(int size, int src_outputs, i
         for (i = 0; i < (n + 1); ++i) {
             const int weights_index = src_i / step + i*layer_step;  // [0 or c or (c, h ,w)]
             const float w = weights_gpu[weights_index];
-            if (weights_normalization == RELU_NORMALIZATION) sum += lrelu(w);
-            else if (weights_normalization == SOFTMAX_NORMALIZATION) sum += expf(w - max_val);
+            if (weights_normalizion == RELU_NORMALIZATION) sum += lrelu(w);
+            else if (weights_normalizion == SOFTMAX_NORMALIZATION) sum += expf(w - max_val);
         }
 
     }
 
     if (weights_gpu) {
         float w = weights_gpu[src_i / step];
-        if (weights_normalization == RELU_NORMALIZATION) w = lrelu(w) / sum;
-        else if (weights_normalization == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
+        if (weights_normalizion == RELU_NORMALIZATION) w = lrelu(w) / sum;
+        else if (weights_normalizion == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
 
-        if (weights_normalization == RELU_NORMALIZATION) grad = w;
-        else if (weights_normalization == SOFTMAX_NORMALIZATION) grad = w*(1-w);
+        if (weights_normalizion == RELU_NORMALIZATION) grad = w;
+        else if (weights_normalizion == SOFTMAX_NORMALIZATION) grad = w*(1-w);
 
         delta_out[id] += delta_in[id] * w; // [0 or c or (c, h ,w)]
         float weights_update_tmp = delta_in[id] * in[id] * grad;// / step;
@@ -1091,11 +1298,11 @@ __global__ void backward_shortcut_multilayer_kernel(int size, int src_outputs, i
 
                 const int weights_index = src_i / step + (i + 1)*layer_step;  // [0 or c or (c, h ,w)]
                 float w = weights_gpu[weights_index];
-                if (weights_normalization == RELU_NORMALIZATION) w = lrelu(w) / sum;
-                else if (weights_normalization == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
+                if (weights_normalizion == RELU_NORMALIZATION) w = lrelu(w) / sum;
+                else if (weights_normalizion == SOFTMAX_NORMALIZATION) w = expf(w - max_val) / sum;
 
-                if (weights_normalization == RELU_NORMALIZATION) grad = w;
-                else if (weights_normalization == SOFTMAX_NORMALIZATION) grad = w*(1 - w);
+                if (weights_normalizion == RELU_NORMALIZATION) grad = w;
+                else if (weights_normalizion == SOFTMAX_NORMALIZATION) grad = w*(1 - w);
 
                 layer_delta[add_index] += delta_in[id] * w;
                 float weights_update_tmp = delta_in[id] * add[add_index] * grad;// / step;
@@ -1108,8 +1315,8 @@ __global__ void backward_shortcut_multilayer_kernel(int size, int src_outputs, i
                     if (threadIdx.x % 32 == 0) {
                         if (!isnan(wu) && !isinf(wu))
                             atomicAdd(&weight_updates_gpu[weights_index], wu);
-                        //if(weights_gpu[weights_index] != 1) printf(" wu = %f, weights_update_tmp = %f, w = %f, weights_gpu[weights_index] = %f, grad = %f, weights_normalization = %d ",
-                        //    wu, weights_update_tmp, w, weights_gpu[weights_index], grad, weights_normalization);
+                        //if(weights_gpu[weights_index] != 1) printf(" wu = %f, weights_update_tmp = %f, w = %f, weights_gpu[weights_index] = %f, grad = %f, weights_normalizion = %d ",
+                        //    wu, weights_update_tmp, w, weights_gpu[weights_index], grad, weights_normalizion);
                     }
                 }
                 else {
@@ -1124,7 +1331,7 @@ __global__ void backward_shortcut_multilayer_kernel(int size, int src_outputs, i
 }
 
 extern "C" void backward_shortcut_multilayer_gpu(int src_outputs, int batch, int n, int *outputs_of_layers_gpu,
-    float **layers_delta_gpu, float *delta_out, float *delta_in, float *weights_gpu, float *weight_updates_gpu, int nweights, float *in, float **layers_output_gpu, WEIGHTS_NORMALIZATION_T weights_normalization)
+    float **layers_delta_gpu, float *delta_out, float *delta_in, float *weights_gpu, float *weight_updates_gpu, int nweights, float *in, float **layers_output_gpu, WEIGHTS_NORMALIZATION_T weights_normalizion)
 {
     const int layer_step = nweights / (n + 1);    // 1 or l.c or (l.c * l.h * l.w)
     int step = 0;
@@ -1134,7 +1341,7 @@ extern "C" void backward_shortcut_multilayer_gpu(int src_outputs, int batch, int
     //printf(" src_outputs = %d, batch = %d, n = %d \n", src_outputs, batch, n);
     int size = batch * src_outputs;
     backward_shortcut_multilayer_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, src_outputs, batch, n, outputs_of_layers_gpu,
-        layers_delta_gpu, delta_out, delta_in, weights_gpu, weight_updates_gpu, nweights, in, layers_output_gpu, weights_normalization);
+        layers_delta_gpu, delta_out, delta_in, weights_gpu, weight_updates_gpu, nweights, in, layers_output_gpu, weights_normalizion);
     CHECK_CUDA(cudaPeekAtLastError());
 }
 
@@ -1535,12 +1742,11 @@ __global__ void add_3_arrays_activate_kernel(float *a1, float *a2, float *a3, si
     const int index = blockIdx.x*blockDim.x + threadIdx.x;
     if (index < size) {
         float val = 0;
-        if (a1) val += a1[index];
-        if (a2) val += a2[index];
+        val += a1[index];
+        val += a2[index];
         if (a3) val += a3[index];
         if (a == LOGISTIC) val = 1.f / (1.f + expf(-val));
-        else if (a == TANH) val = (2 / (1 + expf(-2 * val)) - 1);
-        else if (a == LEAKY) val = (val < 0) ? val*0.1 : val;
+        else if(a == TANH) val = (2 / (1 + expf(-2 * val)) - 1);
         dst[index] = val;
     }
 }
@@ -1549,7 +1755,7 @@ extern "C" void add_3_arrays_activate(float *a1, float *a2, float *a3, size_t si
 {
     const int block_size = BLOCK;
     const int num_blocks = get_number_of_blocks(size, block_size);
-    if (!(a == LOGISTIC || a == TANH || a == LEAKY || a == LINEAR)) {
+    if (a != LOGISTIC && a != TANH) {
         printf(" add_3_arrays_activate() doesn't support activation %d, it supports only LOGISTIC and TANH \n", a);
         exit(EXIT_FAILURE);
     }
@@ -1579,7 +1785,6 @@ __global__ void activate_and_mult_kernel(float *a1, float *a2, size_t size, ACTI
     if (index < size) {
         float val = a1[index];
         if (a == TANH) val = (2 / (1 + expf(-2 * val)) - 1);
-        else if (a == LEAKY) val = (val < 0) ? val*0.1 : val;
         dst[index] = val * a2[index];
     }
 }
@@ -1588,7 +1793,7 @@ extern "C" void activate_and_mult(float *a1, float *a2, size_t size, ACTIVATION 
 {
     const int block_size = BLOCK;
     const int num_blocks = get_number_of_blocks(size, block_size);
-    if (!(a == TANH || a == LEAKY || a == LINEAR)) {
+    if (a != TANH) {
         printf(" activat_and_mult() doesn't support activation %d, it supports only TANH \n", a);
         exit(EXIT_FAILURE);
     }
@@ -1758,11 +1963,11 @@ __global__  void smooth_rotate_weights_kernel(const float *src_weight_gpu, float
                 float x_s = x_c + (x - x_c)*cos_a + (y - y_c)*sin_a;
                 float y_s = y_c - (x - x_c)*sin_a + (y - y_c)*cos_a;
 
-                int x_0 = floorf(x_s);   // round down
-                int x_1 = ceilf(x_s);    // round up
+                int x_0 = floor(x_s);   // round down
+                int x_1 = ceil(x_s);    // round up
                 if (x_0 == x_1) x_1 = x_0 + 1;
-                int y_0 = floorf(y_s);
-                int y_1 = ceilf(y_s);
+                int y_0 = floor(y_s);
+                int y_1 = ceil(y_s);
                 if (y_0 == y_1) y_1 = y_0 + 1;
 
                 float c_x_0 = x_1 - x_s;
@@ -1855,11 +2060,11 @@ __global__  void stretch_weights_kernel(const float *src_weight_gpu, float *weig
                     float x_s = x_c + (x - x_c) / scale;
                     float y_s = y_c + (y - y_c) / scale;
 
-                    int x_0 = floorf(x_s);   // round down
-                    int x_1 = ceilf(x_s);    // round up
+                    int x_0 = floor(x_s);   // round down
+                    int x_1 = ceil(x_s);    // round up
                     if (x_0 == x_1) x_1 = x_0 + 1;
-                    int y_0 = floorf(y_s);
-                    int y_1 = ceilf(y_s);
+                    int y_0 = floor(y_s);
+                    int y_1 = ceil(y_s);
                     if (y_0 == y_1) y_1 = y_0 + 1;
 
                     float c_x_0 = x_1 - x_s;
@@ -1953,11 +2158,11 @@ __global__  void sway_and_flip_weights_kernel(const float *src_weight_gpu, float
                     float x_s = x_c + (x - x_c)*cos_a + (y - y_c)*sin_a;
                     float y_s = y_c - (x - x_c)*sin_a + (y - y_c)*cos_a;
 
-                    int x_0 = floorf(x_s);   // round down
-                    int x_1 = ceilf(x_s);    // round up
+                    int x_0 = floor(x_s);   // round down
+                    int x_1 = ceil(x_s);    // round up
                     if (x_0 == x_1) x_1 = x_0 + 1;
-                    int y_0 = floorf(y_s);
-                    int y_1 = ceilf(y_s);
+                    int y_0 = floor(y_s);
+                    int y_1 = ceil(y_s);
                     if (y_0 == y_1) y_1 = y_0 + 1;
 
                     float c_x_0 = x_1 - x_s;
@@ -2144,11 +2349,11 @@ __global__  void stretch_sway_flip_weights_kernel(const float *src_weight_gpu, f
                     float x_s = x_c + (x - x_c) / scale;
                     float y_s = y_c + (y - y_c) / scale;
 
-                    int x_0 = floorf(x_s);   // round down
-                    int x_1 = ceilf(x_s);    // round up
+                    int x_0 = floor(x_s);   // round down
+                    int x_1 = ceil(x_s);    // round up
                     if (x_0 == x_1) x_1 = x_0 + 1;
-                    int y_0 = floorf(y_s);
-                    int y_1 = ceilf(y_s);
+                    int y_0 = floor(y_s);
+                    int y_1 = ceil(y_s);
                     if (y_0 == y_1) y_1 = y_0 + 1;
 
                     float c_x_0 = x_1 - x_s;
@@ -2203,11 +2408,11 @@ __global__  void stretch_sway_flip_weights_kernel(const float *src_weight_gpu, f
                     float x_s = x_c + (x - x_c)*cos_a + (y - y_c)*sin_a;
                     float y_s = y_c - (x - x_c)*sin_a + (y - y_c)*cos_a;
 
-                    int x_0 = floorf(x_s);   // round down
-                    int x_1 = ceilf(x_s);    // round up
+                    int x_0 = floor(x_s);   // round down
+                    int x_1 = ceil(x_s);    // round up
                     if (x_0 == x_1) x_1 = x_0 + 1;
-                    int y_0 = floorf(y_s);
-                    int y_1 = ceilf(y_s);
+                    int y_0 = floor(y_s);
+                    int y_1 = ceil(y_s);
                     if (y_0 == y_1) y_1 = y_0 + 1;
 
                     float c_x_0 = x_1 - x_s;
@@ -2310,164 +2515,5 @@ extern "C" void expand_array_gpu(const float *src_gpu, float *dst_gpu, int size,
     const int num_blocks = get_number_of_blocks(current_size, block_size);
     expand_array_kernel << <num_blocks, block_size, 0, get_cuda_stream() >> > (src_gpu, dst_gpu, current_size, groups);
 
-    CHECK_CUDA(cudaPeekAtLastError());
-}
-
-
-
-__global__  void mult_inverse_array_kernel(const float *src_gpu, float *dst_gpu, int size, const float eps,
-    float divider, const float clip, const float abs_add)
-{
-    const int index = blockIdx.x*blockDim.x + threadIdx.x;
-
-    if (index < size) {
-        float val = src_gpu[index];
-        float sign = (val < 0) ? -1 : 1;
-        // eps = 1 by default
-        // eps = 2 - lower delta
-        // eps = 0 - higher delta (linear)
-        // eps = -1 - high delta (inverse number)
-        // = (abs(x)*10+1)^(-1)
-        float unsigned_val = powf(fabs(val)*10 + abs_add, eps);
-        unsigned_val = unsigned_val / divider;
-        if (unsigned_val > clip && clip != 0.0) unsigned_val = clip;
-        if (isnan(unsigned_val) || isinf(unsigned_val)) unsigned_val = 0;
-        dst_gpu[index] = unsigned_val * sign;
-    }
-}
-
-extern "C" void mult_inverse_array_gpu(const float *src_gpu, float *dst_gpu, int size, float eps, float divider, float clip, float abs_add)
-{
-    const int block_size = BLOCK;
-    const int num_blocks = get_number_of_blocks(size, block_size);
-    mult_inverse_array_kernel << <num_blocks, block_size, 0, get_cuda_stream() >> > (src_gpu, dst_gpu, size, eps, divider, clip, abs_add);
-
-    CHECK_CUDA(cudaPeekAtLastError());
-}
-
-
-
-__global__ void P_constrastive_f_det_kernel(int *labels, unsigned int feature_size, float temperature, contrastive_params *contrast_p, const int contrast_p_size)
-{
-    const int il = blockIdx.x*blockDim.x + threadIdx.x;
-
-    if (il < contrast_p_size) {
-        const float sim = contrast_p[il].sim;
-        const size_t i = contrast_p[il].i;
-        const size_t j = contrast_p[il].j;
-
-        const float numerator = expf(sim / temperature);
-
-        float denominator = 0;
-        int k;
-        for (k = 0; k < contrast_p_size; ++k) {
-            contrastive_params cp = contrast_p[k];
-            //if (k != i && labels[k] != labels[i]) {
-            //if (k != i) {
-            if (cp.i != i && cp.j == j) {
-                //const float sim_den = cp.sim;
-                ////const float sim_den = find_sim(k, l, contrast_p, contrast_p_size); // cosine_similarity(z[k], z[l], feature_size);
-                //denominator += expf(sim_den / temperature);
-                denominator += cp.exp_sim;
-            }
-        }
-
-        float result = 0.9999;
-        if (denominator != 0) result = numerator / denominator;
-        if (result > 1) result = 0.9999;
-
-        contrast_p[il].P = result;
-    }
-}
-
-
-extern "C" void P_constrastive_f_det_gpu(int *labels, unsigned int feature_size, float temperature, contrastive_params *contrast_p, const int contrast_p_size)
-{
-    const int block_size = BLOCK;
-    const int num_blocks = get_number_of_blocks(contrast_p_size, block_size);
-    P_constrastive_f_det_kernel << <num_blocks, block_size, 0, get_cuda_stream() >> > (labels, feature_size, temperature, contrast_p, contrast_p_size);
-
-    CHECK_CUDA(cudaPeekAtLastError());
-}
-
-
-
-
-__global__ void coord_conv_kernel(float *dst, int w, int h, int chan, int batch, int type)
-{
-    int i = blockIdx.x*blockDim.x + threadIdx.x;
-
-    const int x = i % w;
-    i = i / w;
-    const int y = i % h;
-    i = i / h;
-    const int c = i % chan;
-    //i = i / chan;
-    //const int b = i % batch;
-
-    if (type == 0) {
-        if (c == 0) {
-            const float x_val = (2.0f * x) / w - 1.0f;  // [-1; 1)
-            dst[i] = x_val; // x - coord
-        }
-        else if (c == 1) {
-            const float y_val = (2.0f * y) / h - 1.0f;  // [-1; 1)
-            dst[i] = y_val; // y - coord
-        }
-        else if (c == 2) {
-            const float x_val = (2.0f * x) / w - 1.0f;  // [-1; 1)
-            const float y_val = (2.0f * y) / h - 1.0f;  // [-1; 1)
-            const float rad_val = sqrtf(x_val*x_val + y_val*y_val);  // [0; 1.414)
-            dst[i] = rad_val; // rad - coord
-        }
-    }
-    else if (type == 1) {
-        if (c >= 0 && c <= 2) {
-            dst[i] = 0;
-        }
-    }
-}
-
-extern "C" void coord_conv_gpu(float *dst, int size, int w, int h, int chan, int b, int type)
-{
-    const int block_size = BLOCK;
-    const int num_blocks = get_number_of_blocks(size, block_size);
-    coord_conv_kernel << <num_blocks, block_size, 0, get_cuda_stream() >> > (dst, w, h, chan, b, type);
-
-    CHECK_CUDA(cudaPeekAtLastError());
-}
-
-
-__global__ void forward_implicit_kernel(int size, int batch, int nweights, float *weight_gpu, float *output_gpu)
-{
-    const int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-    if (id >= size) return;
-
-    output_gpu[id] = weight_gpu[id % nweights];
-}
-
-extern "C" void forward_implicit_gpu(int batch, int nweights, float *weight_gpu, float *output_gpu)
-{
-    int size = batch * nweights;
-    forward_implicit_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, batch, nweights, weight_gpu, output_gpu);
-    CHECK_CUDA(cudaPeekAtLastError());
-}
-
-
-
-__global__ void backward_implicit_kernel(int size, int batch, int nweights, float *weight_updates_gpu, float *delta_gpu)
-{
-    const int id = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
-    if (id >= size) return;
-
-    for (int i = 0; i < batch; ++i) {
-        weight_updates_gpu[id] += delta_gpu[id + i * nweights];
-    }
-}
-
-extern "C" void backward_implicit_gpu(int batch, int nweights, float *weight_updates_gpu, float *delta_gpu)
-{
-    int size = nweights;
-    backward_implicit_kernel << <cuda_gridsize(size), BLOCK, 0, get_cuda_stream() >> > (size, batch, nweights, weight_updates_gpu, delta_gpu);
     CHECK_CUDA(cudaPeekAtLastError());
 }
