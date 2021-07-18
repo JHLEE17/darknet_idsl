@@ -48,6 +48,16 @@ ehthumbs.db
 Icon?
 Thumbs.db
 *.swp
+*.swj
+*.swk
+*.swl
+*.swm
+*.swn
+*.swo
+
+
+
+
 
 # IDE generated #
 .vs/
