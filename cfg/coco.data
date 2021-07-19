@@ -1,6 +1,6 @@
 classes= 80
-train  = /home/namjoon/coco/2014/coco/trainvalno5k.txt
-valid  = /home/namjoon/coco/2014/coco/5k.txt
+train  = ./train_100_colab.txt
+valid  = ./val_28_colab.txt
 names = data/coco.names
 backup = backup/
 eval=coco
