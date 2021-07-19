@@ -1569,7 +1569,7 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
     avg_outputs = avg_outputs / avg_counter;
 
     
-//#ifdef PRUNE
+#ifdef PRUNE
         /* NJ */
         //Gaussian YOLOv3-tiny BFLOPS : 5.5769028664
 
@@ -1579,7 +1579,7 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
         printf("***************************************************\n");
         printf("***************************************************\n");
 
-//#endif
+#endif
 
 
 
@@ -2039,7 +2039,7 @@ void load_convolutional_weights(layer l, FILE *fp)
                 if(i == 0) {
                     printf("***************************************\n");
                     printf("***************************************\n");
-                    printf("[%d] Convolutional Layer Weights\n",l.index);
+                    printf("[%d] Convolutional layer quantized weights\n",l.index);
                 }
                 if(l.weights[i] > 0){
                     printf("FP32  %.8f -> ",l.weights[i]);
