@@ -224,6 +224,7 @@ struct layer {
     int inputs;
     int outputs;
     int nweights;
+    int *qnweights;
     int nbiases;
     int extra;
     int truths;

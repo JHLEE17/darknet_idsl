@@ -55,7 +55,9 @@ __global__ void slim_kernel(int N, float lr, float * scale_updates, float * scal
 void taylor_original_ongpu(int N, float lr, float * scale_updates, float * scales, float * scale_updates_accum, float * drop_mask, float * s_momentum, int batch, float momentum, int method, float sparsity)
 {
         
-    // Slimming
+    //Balance Term. 
+    //High penalty -> Low  Accuracy & High Compression rate
+    //Low  penalty -> High Accuracy & Low  Compression rate
     float penalty = 0.0001;
     slim_kernel<<<cuda_gridsize(N), BLOCK, 0, get_cuda_stream()>>>(N, lr, scale_updates, scales, scale_updates_accum, penalty*batch);
     

@@ -1513,6 +1513,7 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
         }
         if (l.bflops > 0) bflops += l.bflops;
 
+
         if (l.w > 1 && l.h > 1) {
             avg_outputs += l.outputs;
             avg_counter++;
@@ -1579,6 +1580,8 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
         printf("***************************************************\n");
 
 //#endif
+
+
 
 
     fprintf(stderr, "Total BFLOPS %5.3f \n", bflops);
@@ -1997,27 +2000,6 @@ void load_convolutional_weights(layer l, FILE *fp)
     //if(l.c == 3) scal_cpu(num, 1./256, l.weights, 1);
 
 
-/*
-#ifdef PRUNE
-
-    //Weight Pruning based on Magnitude
-
-    if(l.batch_normalize){
-        float threshold =  0.001;
-        for(int i = 0 ; i < l.nweights; ++i){
-            if(fabs(l.weights[i]) < threshold){
-                l.weights[i] = 0;
-            }
-        }
-    }
-
-#endif
-*/
-
-
-
-
-
     /* NJ */
 #ifdef QUANTIZATION
     
@@ -2033,17 +2015,11 @@ void load_convolutional_weights(layer l, FILE *fp)
         }    
         qsort(l.weights_copy, l.nweights, sizeof(float), compare);
 
-     
         int clip_idx = (l.nweights-1); // max
-        //int clip_idx = (int)((l.nweights-1) * 0.999999); // 99.9999% 
-        //int clip_idx = (int)((l.nweights-1) * 0.99999);  // 99.999%
-        //int clip_idx = (int)((l.nweights-1) * 0.9999);   // 99.99%
-        //int clip_idx = (int)((l.nweights-1) * 0.999);    // 99.9%
-        //int clip_idx = (int)((l.nweights-1) * 0.99);     // 99.%
-
      
         // Clipping value
         float clip_val = l.weights_copy[clip_idx];
+
 
         // Scaling Factor
         float scale = (pow(2, bit-1)-1) / clip_val;
@@ -2056,27 +2032,49 @@ void load_convolutional_weights(layer l, FILE *fp)
            
             // Clipping. Range : [-clip_val, clip_val]
             l.weights[i] = min_val_cmp(max_val_cmp(l.weights[i], -clip_val), clip_val);
+           
+
             
-            // Fake Quantization : (Quantize -> Dequantize)
-            l.weights[i] = round(l.weights[i] * scale) / scale;
+            if(l.index == 13 && i < 10){
+                if(i == 0) {
+                    printf("***************************************\n");
+                    printf("***************************************\n");
+                    printf("[%d] Convolutional Layer Weights\n",l.index);
+                }
+                if(l.weights[i] > 0){
+                    printf("FP32  %.8f -> ",l.weights[i]);
+                }else{
+                    printf("FP32 %.8f -> ",l.weights[i]);
+                }
+            }
+           
+            /* Fake Quantization */
+
+            // INT Quantize
+            l.weights[i] = round(l.weights[i] * scale);
+            
+            if(l.index == 13 && i < 10){
+                printf("INT %f\n",l.weights[i]);
+            
+                if(i == 9) {
+                    printf("***************************************\n");
+                    printf("***************************************\n");
+                }
+            }
+            
+            // Dequantize
+            l.weights[i] = l.weights[i] / scale;
         }
 
     }
+   
 #endif
-
+     
 
 	if (l.flipped) {
         transpose_matrix(l.weights, (l.c/l.groups)*l.size*l.size, l.n);
     }
   
-    
-
-  
-    
-    
-    
-    
-    
     
     //if (l.binary) binarize_weights(l.weights, l.n, (l.c/l.groups)*l.size*l.size, l.weights);
 #ifdef GPU
@@ -2135,6 +2133,9 @@ void load_weights_upto(network *net, char *filename, int cutoff)
     printf(", trained: %.0f K-images (%.0f Kilo-batches_64) \n", (float)(*net->seen / 1000), (float)(*net->seen / 64000));
     int transpose = (major > 1000) || (minor > 1000);
 
+    int nweights = 0;
+    int qnweights = 0;
+        
 	
     int i;
     for(i = 0; i < net->n && i < cutoff; ++i){
@@ -2206,8 +2207,20 @@ void load_weights_upto(network *net, char *filename, int cutoff)
             }
 #endif
         }
+       
+        
+        if(l.nweights > 0){
+            nweights += l.nweights;
+            qnweights += l.qnweights[0];
+        }
+
         if (feof(fp)) break;
     }
+
+    //printf("Gaussian YOLOv3-tiny The Numner of Parameters = %d -> %d\n", nweights, qnweights);
+
+
+
     fprintf(stderr, "Done! Loaded %d layers from weights-file \n", i);
 	fclose(fp);
 }

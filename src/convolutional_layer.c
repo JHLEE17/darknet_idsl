@@ -413,7 +413,8 @@ convolutional_layer make_convolutional_layer(int batch, int steps, int h, int w,
     l.batch_normalize = batch_normalize;
     l.learning_rate_scale = 1;
     l.nweights = (c / groups) * n * size * size;
-
+        
+    l.qnweights = (int*)xcalloc(1, sizeof(int));
 
 
     if (l.share_layer) {
@@ -432,6 +433,8 @@ convolutional_layer make_convolutional_layer(int batch, int steps, int h, int w,
         l.weights = (float*)xcalloc(l.nweights, sizeof(float));
         l.weights_copy = (float*)xcalloc(l.nweights, sizeof(float));
         l.biases = (float*)xcalloc(n, sizeof(float));
+        
+        
 
         if (train) {
             l.weight_updates = (float*)xcalloc(l.nweights, sizeof(float));
