@@ -4,7 +4,7 @@
 
 <img width="25%" src="https://idsl.seoultech.ac.kr/image/IDSL-logo2.png"/> <img width="50%" src="https://img.etnews.com/photonews/1606/817629_20160629154205_673_0001.jpg"/>
 
-[![colab](![image](https://user-images.githubusercontent.com/53076154/126258038-c3791bda-e2ce-40ff-a81b-01c18ea80668.png))](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
+[![colab](![image](https://s3.us-west-2.amazonaws.com/secure.notion-static.com/2de6a199-e8f9-4377-87d5-029440a0b8fc/practivce.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAT73L2G45O3KS52Y5%2F20210720%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20210720T033540Z&X-Amz-Expires=86400&X-Amz-Signature=77deb4e75d4aa1399da9ace70fa36d7d23ea5bd712122c78dd38f16714cc7da9&X-Amz-SignedHeaders=host&response-content-disposition=filename%20%3D%22practivce.png%22))](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
 
 <details>
   <summary>Original Version</summary>
