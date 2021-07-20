@@ -4,9 +4,8 @@
 
 <img width="25%" src="https://idsl.seoultech.ac.kr/image/IDSL-logo2.png"/> <img width="50%" src="https://img.etnews.com/photonews/1606/817629_20160629154205_673_0001.jpg"/>
 
+## Click the below link for IDEC Practice
 <a href="https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing"><img src = "https://github.com/JHLEE17/darknet_idsl/blob/master/data/colab%20practivce%20for%20IDEC.png" width = "70%"/></a>
-
-[![colab](https://github.com/JHLEE17/darknet_idsl/blob/master/data/colab%20practivce%20for%20IDEC.png)](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
 
 <details>
   <summary>Original Version</summary>
