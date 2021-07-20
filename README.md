@@ -4,7 +4,7 @@
 
 <img width="25%" src="https://idsl.seoultech.ac.kr/image/IDSL-logo2.png"/> <img width="50%" src="https://img.etnews.com/photonews/1606/817629_20160629154205_673_0001.jpg"/>
 
-[![colab](![image](notion://www.notion.so/image/https%3A%2F%2Fs3-us-west-2.amazonaws.com%2Fsecure.notion-static.com%2F2de6a199-e8f9-4377-87d5-029440a0b8fc%2Fpractivce.png?table=block&id=c06bc6b9-66b4-4aea-b0f9-e3131601f1d5&spaceId=eb73c91f-1657-43cc-bd28-ffe2d424b74e&width=2610&userId=82388052-6e99-4075-a6ff-c7c977b84f88&cache=v2))](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
+[![colab](![image](https://github.com/JHLEE17/darknet_idsl/blob/master/data/colab%20practivce%20for%20IDEC.png))](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
 
 <details>
   <summary>Original Version</summary>
