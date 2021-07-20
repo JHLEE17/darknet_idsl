@@ -4,7 +4,7 @@
 
 <img width="25%" src="https://idsl.seoultech.ac.kr/image/IDSL-logo2.png"/> <img width="50%" src="https://img.etnews.com/photonews/1606/817629_20160629154205_673_0001.jpg"/>
 
-[![colab](![image](https://s3.us-west-2.amazonaws.com/secure.notion-static.com/2de6a199-e8f9-4377-87d5-029440a0b8fc/practivce.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAT73L2G45O3KS52Y5%2F20210720%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20210720T033540Z&X-Amz-Expires=86400&X-Amz-Signature=77deb4e75d4aa1399da9ace70fa36d7d23ea5bd712122c78dd38f16714cc7da9&X-Amz-SignedHeaders=host&response-content-disposition=filename%20%3D%22practivce.png%22))](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
+[![colab](![image](notion://www.notion.so/image/https%3A%2F%2Fs3-us-west-2.amazonaws.com%2Fsecure.notion-static.com%2F2de6a199-e8f9-4377-87d5-029440a0b8fc%2Fpractivce.png?table=block&id=c06bc6b9-66b4-4aea-b0f9-e3131601f1d5&spaceId=eb73c91f-1657-43cc-bd28-ffe2d424b74e&width=2610&userId=82388052-6e99-4075-a6ff-c7c977b84f88&cache=v2))](https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing)
 
 <details>
   <summary>Original Version</summary>
