@@ -1,6 +1,6 @@
 # IDEC 실습용 자료
 
-### This repository is forked version of AlexeyAB/darknet.
+#### This repository is forked version of AlexeyAB/darknet.
 
 <img width="25%" src="https://idsl.seoultech.ac.kr/image/IDSL-logo2.png"/> <img width="50%" src="https://img.etnews.com/photonews/1606/817629_20160629154205_673_0001.jpg"/>
 
