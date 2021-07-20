@@ -7,6 +7,23 @@
 ## Click the below link for IDEC Practice
 <a href="https://colab.research.google.com/drive/1lKYyUGMiISo6As43Q9X6XYdSuWDAL_t9?usp=sharing"><img src = "https://github.com/JHLEE17/darknet_idsl/blob/master/data/colab%20practivce%20for%20IDEC.png" width = "70%"/></a>
 
+## Contents
+### 클라우드에서 Darknet으로 Tiny-YOLOv3 Object Detector 실행하기 (GPU 사용)
+* Step 1: Colab GPU 활성화 시키기
+* Step 2: Darknet 복사 및 환경구축
+* Step 3: pre-trained weights 다운로드
+* Step 4: GUI를 위한 함수 정의
+* Step 5: tiny-YOLOv3로 detection 진행
+* Step 6: 여러가지 command line flags를 사용하여 YOLOv3 사용하기
+  * Threshold Flag
+  * 출력된 Bounding Box 의 좌표
+  * 결과 이미지 보지 않기
+* Step 7: YOLOv3 학습시키기
+* Step 8: YOLO 모델 성능 향상(Gaussian)
+* Step 9: INT8 Quantization
+* Step 10: Filter Pruning
+
+
 <details>
   <summary>Original Version</summary>
 
